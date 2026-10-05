@@ -11,6 +11,7 @@ interface ExportOptions {
 interface ButterExportProgress {
   state: string
   progress: number
+  error?: string
 }
 
 export async function exportFromUrl(url: string, options: ExportOptions): Promise<string> {
@@ -107,7 +108,14 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
           }))
 
           if (exportProgress) {
-            const { state, progress } = exportProgress
+            const { state, progress, error } = exportProgress
+
+            if (state === 'error') {
+              process.stdout.write('\n')
+              settle(() => reject(new Error(error ?? 'No detailed error message was provided.')))
+              return
+            }
+
             process.stdout.write(`\r${state}: ${progress.toFixed(1)}%   `)
 
             const sig = `${state}:${progress}`
