@@ -47,10 +47,9 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
     // client is kept in scope; Page.setDownloadBehavior requires it even though
     // we detect download completion via filesystem polling rather than CDP events
 
-    const browserLogs: string[] = []
     if (DEBUG) {
-      page.on('console', (msg) => browserLogs.push(`[${msg.type()}] ${msg.text()}`))
-      page.on('pageerror', (err) => browserLogs.push(`[pageerror] ${err.message}`))
+      page.on('console', (msg) => process.stderr.write(`[${msg.type()}] ${msg.text()}\n`))
+      page.on('pageerror', (err) => process.stderr.write(`[pageerror] ${err.message}\n`))
     }
 
     // avoids blob serialization overhead vs. intercepting network responses
@@ -117,9 +116,6 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
 
             if (state === 'error') {
               process.stdout.write('\n')
-              if (DEBUG && browserLogs.length > 0) {
-                process.stderr.write('Browser logs:\n' + browserLogs.join('\n') + '\n')
-              }
               settle(() => reject(new Error(error ?? 'No detailed error message was provided.')))
               return
             }
