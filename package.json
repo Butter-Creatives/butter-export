@@ -1,6 +1,6 @@
 {
   "name": "butter-export",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "bin": {
     "butter-export": "./dist/cli.js"
   },

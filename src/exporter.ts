@@ -2,6 +2,8 @@ import puppeteer, { Browser, CDPSession, Page } from 'puppeteer'
 import * as path from 'path'
 import * as fs from 'fs'
 
+const DEBUG = true
+
 interface ExportOptions {
   outputDir: string
   chromePath?: string
@@ -39,6 +41,12 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
     const client: CDPSession = await page.createCDPSession()
     // client is kept in scope; Page.setDownloadBehavior requires it even though
     // we detect download completion via filesystem polling rather than CDP events
+
+    const browserLogs: string[] = []
+    if (DEBUG) {
+      page.on('console', (msg) => browserLogs.push(`[${msg.type()}] ${msg.text()}`))
+      page.on('pageerror', (err) => browserLogs.push(`[pageerror] ${err.message}`))
+    }
 
     // avoids blob serialization overhead vs. intercepting network responses
     await client.send('Page.setDownloadBehavior', {
@@ -112,6 +120,9 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
 
             if (state === 'error') {
               process.stdout.write('\n')
+              if (DEBUG && browserLogs.length > 0) {
+                process.stderr.write('Browser logs:\n' + browserLogs.join('\n') + '\n')
+              }
               settle(() => reject(new Error(error ?? 'No detailed error message was provided.')))
               return
             }
