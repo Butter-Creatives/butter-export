@@ -34,6 +34,8 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
   try {
     const page: Page = await browser.newPage()
     const client: CDPSession = await page.createCDPSession()
+    // client is kept in scope; Page.setDownloadBehavior requires it even though
+    // we detect download completion via filesystem polling rather than CDP events
 
     // avoids blob serialization overhead vs. intercepting network responses
     await client.send('Page.setDownloadBehavior', {
@@ -65,7 +67,17 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
       throw new Error('Waiting for export engine timed out: the studio may not have loaded correctly.')
     })
 
-    await page.evaluate(() => (window as any).exportInBrowser())
+    // snapshot filenames+mtimes so the poller detects new files AND overwrites
+    const preExportSnapshot = new Map<string, number>()
+    for (const f of fs.readdirSync(outputDir)) {
+      try { preExportSnapshot.set(f, fs.statSync(path.join(outputDir, f)).mtimeMs) } catch {}
+    }
+
+    await page.evaluate(() => {
+      // Don't return this because then the CLI awaits the result. We intentionally want to poll for
+      // progress.
+      (window as any).exportInBrowser()
+    })
 
     const filePath = await new Promise<string>((resolve, reject) => {
       let settled = false
@@ -80,14 +92,17 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
         settled = true
         clearInterval(progressPoll)
         clearInterval(stallCheck)
+        clearInterval(filePoller)
         fn()
       }
 
+      // Single evaluate per tick to avoid redundant CDP roundtrips
       const progressPoll = setInterval(async () => {
         try {
-          const exportProgress: ButterExportProgress | undefined = await page.evaluate(
-            () => (window as any).butterExportProgress,
-          )
+          const { exportProgress, exportError } = await page.evaluate(() => ({
+            exportProgress: (window as any).butterExportProgress as ButterExportProgress | undefined,
+            exportError: (window as any).__butterExportError as string | undefined,
+          }))
 
           if (exportProgress) {
             const { state, progress } = exportProgress
@@ -101,16 +116,13 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
           }
 
           // Butter surfaces export failures via window.__butterExportError rather than throwing
-          const exportError: string | undefined = await page.evaluate(
-            () => (window as any).__butterExportError,
-          )
           if (exportError) {
             settle(() => reject(new Error(`Export error from Butter: ${exportError}`)))
           }
         } catch {
           // page may have already been closed
         }
-      }, 500)
+      }, 100)
 
       const stallCheck = setInterval(() => {
         if (Date.now() - lastProgressTime > stallTimeoutMs) {
@@ -120,15 +132,26 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
         }
       }, 5_000)
 
-      client.on('Page.downloadProgress', (event: any) => {
-        if (event.state === 'completed') {
-          process.stdout.write('\n')
-          settle(() => resolve(path.join(outputDir, event.filename ?? event.guid)))
-        } else if (event.state === 'canceled') {
-          process.stdout.write('\n')
-          settle(() => reject(new Error('Download was canceled')))
+      // Page.downloadProgress is experimental and unreliable; watch the filesystem instead.
+      // Chrome writes a .crdownload temp file during download then renames to the final name.
+      const filePoller = setInterval(() => {
+        const isNew = (f: string) => {
+          const prev = preExportSnapshot.get(f)
+          if (prev === undefined) return true
+          try { return fs.statSync(path.join(outputDir, f)).mtimeMs !== prev } catch { return false }
         }
-      })
+        const newFiles = fs.readdirSync(outputDir).filter(isNew)
+        const completed = newFiles.find((f) => !f.endsWith('.crdownload'))
+        if (completed) {
+          const ext = path.extname(completed)
+          const base = path.basename(completed, ext)
+          const ts = new Date().toISOString().replace(/[:.]/g, '-')
+          const renamed = path.join(outputDir, `${base}-${ts}${ext}`)
+          fs.renameSync(path.join(outputDir, completed), renamed)
+          process.stdout.write('\n')
+          settle(() => resolve(renamed))
+        }
+      }, 500)
     })
 
     return filePath
