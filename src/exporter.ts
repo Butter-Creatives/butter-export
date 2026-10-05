@@ -1,8 +1,9 @@
 import puppeteer, { Browser, CDPSession, Page } from 'puppeteer'
 import * as path from 'path'
 import * as fs from 'fs'
+import { randomUUID } from 'crypto'
 
-const DEBUG = true
+const DEBUG = false
 
 interface ExportOptions {
   outputDir: string
@@ -22,6 +23,10 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true })
   }
+
+  // isolated temp dir so the file poller only sees Chrome's download, nothing else
+  const downloadDir = path.join(outputDir, `.butter-export-${randomUUID()}`)
+  fs.mkdirSync(downloadDir, { recursive: true })
 
   const browser: Browser = await puppeteer.launch({
     headless: true,
@@ -51,7 +56,7 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
     // avoids blob serialization overhead vs. intercepting network responses
     await client.send('Page.setDownloadBehavior', {
       behavior: 'allow',
-      downloadPath: outputDir,
+      downloadPath: downloadDir,
     })
 
     // magic link redeems the token, sets auth cookies, then redirects to /studio/[id]
@@ -78,16 +83,8 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
       throw new Error('Waiting for export engine timed out: the studio may not have loaded correctly.')
     })
 
-    // snapshot filenames+mtimes so the poller detects new files AND overwrites
-    const preExportSnapshot = new Map<string, number>()
-    for (const f of fs.readdirSync(outputDir)) {
-      try { preExportSnapshot.set(f, fs.statSync(path.join(outputDir, f)).mtimeMs) } catch {}
-    }
-
     await page.evaluate(() => {
-      // Don't return this because then the CLI awaits the result. We intentionally want to poll for
-      // progress.
-      (window as any).exportInBrowser()
+      ;(window as any).exportInBrowser()
     })
 
     const filePath = await new Promise<string>((resolve, reject) => {
@@ -156,19 +153,14 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
       // Page.downloadProgress is experimental and unreliable; watch the filesystem instead.
       // Chrome writes a .crdownload temp file during download then renames to the final name.
       const filePoller = setInterval(() => {
-        const isNew = (f: string) => {
-          const prev = preExportSnapshot.get(f)
-          if (prev === undefined) return true
-          try { return fs.statSync(path.join(outputDir, f)).mtimeMs !== prev } catch { return false }
-        }
-        const newFiles = fs.readdirSync(outputDir).filter(isNew)
-        const completed = newFiles.find((f) => !f.endsWith('.crdownload'))
+        const completed = fs.readdirSync(downloadDir).find((f) => !f.endsWith('.crdownload'))
         if (completed) {
           const ext = path.extname(completed)
           const base = path.basename(completed, ext)
           const ts = new Date().toISOString().replace(/[:.]/g, '-')
           const renamed = path.join(outputDir, `${base}-${ts}${ext}`)
-          fs.renameSync(path.join(outputDir, completed), renamed)
+          fs.renameSync(path.join(downloadDir, completed), renamed)
+          fs.rmdirSync(downloadDir)
           process.stdout.write('\n')
           settle(() => resolve(renamed))
         }
@@ -178,5 +170,6 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
     return filePath
   } finally {
     await browser.close()
+    if (fs.existsSync(downloadDir)) fs.rmSync(downloadDir, { recursive: true })
   }
 }
