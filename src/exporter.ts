@@ -27,6 +27,8 @@ export async function exportFromUrl(url: string, options: ExportOptions): Promis
       '--disable-setuid-sandbox',
       '--disable-frame-rate-limit', // rAF runs at full speed instead of being throttled in background
       '--disable-dev-shm-usage',    // prevents crashes when /dev/shm is small (CI, Docker, etc.)
+      '--disable-crash-reporter',   // prevents Crashpad from trying to write to disk
+      '--no-first-run',             // skips first-run setup that can fail in restricted environments
     ],
     ...(chromePath ? { executablePath: chromePath } : {}),
   })
