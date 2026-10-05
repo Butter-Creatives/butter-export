@@ -1,6 +1,6 @@
 # butter-export
 
-This is a small utility for doing local exports of <a href="https://butter.video>Butter</a> projects. You can also do these in your browser, but this tool lets you do this in the background.
+This is a small utility for doing local exports of <a href="https://butter.video">Butter</a> projects. You can also do these in your browser, but this tool lets you do this in the background.
 
 ## Running
 
